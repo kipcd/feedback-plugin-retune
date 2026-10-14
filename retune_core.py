@@ -22,6 +22,9 @@ STANDARD_OPEN = {
     ("bass", 6): [23, 28, 33, 38, 43, 48],
 }
 
+STRING_COUNTS = {"bass": (4, 5), "guitar": (6, 7, 8)}
+DEFAULT_STRINGS = {"bass": 4, "guitar": 6}
+
 PITCH_CLASS_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
 PITCH_CLASS_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 PITCH_CLASS_DEFAULT = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
@@ -74,6 +77,10 @@ def is_bass(entry: dict, arrangement: dict | None = None) -> bool:
     return instrument_kind(entry, arrangement) == "bass"
 
 
+def fretted_kind(entry: dict, arrangement: dict | None = None) -> str:
+    return "bass" if is_bass(entry, arrangement) else "guitar"
+
+
 def is_pitched_chart(entry: dict, arrangement: dict | None = None) -> bool:
     return (bool(entry.get("file")) and not entry.get("drum_tab")
             and instrument_kind(entry, arrangement) in ("guitar", "bass"))
@@ -102,13 +109,13 @@ def string_count(entry: dict, arrangement: dict, tuning: list[int]) -> int:
             if f is not None and f >= 0:
                 highest = max(highest, s)
     count = len(tuning) if tuning else 6
-    if is_bass(entry, arrangement) and count == 6 and highest < 4:
+    if is_bass(entry, arrangement) and count == 6:
         count = 4
     return max(count, highest + 1)
 
 
 def standard_open(entry: dict, arrangement: dict, count: int) -> list[int]:
-    kind = "bass" if is_bass(entry, arrangement) else "guitar"
+    kind = fretted_kind(entry, arrangement)
     key = (kind, count)
     if key in STANDARD_OPEN:
         return STANDARD_OPEN[key]
@@ -180,7 +187,16 @@ def list_targets(ref_src: list[int], ref_open: list[int]) -> list[dict]:
                 "large_shift": abs(shift) > LARGE_SHIFT,
             })
     targets.sort(key=lambda t: (t["family"] != "standard", -t["offsets"][-1], t["low_adjust"]))
-    return targets
+    keep = {
+        "shift": 0,
+        "low_adjust": 0,
+        "offsets": list(ref_src),
+        "name": tuning_name(ref_src, ref_open),
+        "family": "keep",
+        "large_shift": False,
+        "keep": True,
+    }
+    return [keep, *targets]
 
 
 def _same_time(a: float, b: float) -> bool:
@@ -224,6 +240,35 @@ class ChartReport:
         return dict(vars(self))
 
 
+class StringPlan:
+    def __init__(self, target_of: list[int | None], src_opens: list[int], opens: list[int], offset: int = 0):
+        self.target_of = target_of
+        self.src_opens = src_opens
+        self.opens = opens
+        self.offset = offset
+
+    @property
+    def source_count(self) -> int:
+        return len(self.target_of)
+
+    @property
+    def target_count(self) -> int:
+        return len(self.opens)
+
+    def is_identity(self) -> bool:
+        return self.source_count == self.target_count and all(
+            t == s and self.src_opens[s] == self.opens[t] for s, t in enumerate(self.target_of))
+
+    def mapped(self, s: int, f: int) -> tuple[int | None, int]:
+        t = self.target_of[s]
+        if t is None:
+            return None, f
+        return t, f + self.src_opens[s] - self.opens[t]
+
+    def nearest_target(self, s: int) -> int:
+        return max(0, min(self.target_count - 1, s + self.offset))
+
+
 def _move_note(note: dict, new_s: int, new_f: int, report: ChartReport):
     old_f = int(note.get("f", 0))
     note["s"] = new_s
@@ -242,33 +287,50 @@ def _move_note(note: dict, new_s: int, new_f: int, report: ChartReport):
         note["fg"] = -1
 
 
-def _refret_note(note: dict, delta: list[int], opens: list[int], occupied,
-                 report: ChartReport, moved: list, t: float) -> bool:
-    s = int(note.get("s", 0))
-    d = delta[s] if s < len(delta) else 0
-    if d == 0:
-        return True
-    old_f = int(note.get("f", 0))
-    new_f = old_f + d
-    report.refretted += 1
-    if note.get("hm"):
-        report.harmonics_moved += 1
-    if _valid_fret(new_f):
-        _move_note(note, s, new_f, report)
-        moved.append((t, new_f))
-        return True
-    pitch = opens[s] + new_f
-    for cand_s, cand_f, octave_rank in _candidates(pitch, s, opens, occupied()):
-        note["f"] = old_f
-        _move_note(note, cand_s, cand_f, report)
-        moved.append((t, cand_f))
-        if octave_rank:
-            report.octave_moved += 1
+def _place_group(notes: list[dict], plan: StringPlan, report: ChartReport, moved: list,
+                 t: float) -> tuple[list[dict], list[tuple[int, int, int]]]:
+    pending = []
+    original: dict[int, int] = {}
+    for note in notes:
+        s, f = int(note.get("s", 0)), int(note.get("f", 0))
+        original[id(note)] = s
+        if not 0 <= s < plan.source_count:
+            continue
+        target, new_f = plan.mapped(s, f)
+        if target is not None and new_f == f:
+            note["s"] = target
+            continue
+        report.refretted += 1
+        if note.get("hm"):
+            report.harmonics_moved += 1
+        if target is not None and _valid_fret(new_f):
+            _move_note(note, target, new_f, report)
+            moved.append((t, new_f))
+            continue
+        preferred = target if target is not None else plan.nearest_target(s)
+        pending.append((note, plan.src_opens[s] + f, preferred))
+
+    unplaced = {id(note) for note, _, _ in pending}
+    occupied = {int(n.get("s", 0)) for n in notes if id(n) not in unplaced}
+    removed = set()
+    for note, pitch, preferred in pending:
+        for cand_s, cand_f, octave_rank in _candidates(pitch, preferred, plan.opens, occupied):
+            _move_note(note, cand_s, cand_f, report)
+            moved.append((t, cand_f))
+            occupied.add(cand_s)
+            if octave_rank:
+                report.octave_moved += 1
+            else:
+                report.relocated += 1
+            break
         else:
-            report.relocated += 1
-        return True
-    report.removed += 1
-    return False
+            report.removed += 1
+            removed.add(id(note))
+
+    kept = [n for n in notes if id(n) not in removed]
+    moves = [(original[id(n)], -1 if id(n) in removed else int(n["s"]), -1 if id(n) in removed else int(n["f"]))
+             for n in notes]
+    return kept, moves
 
 
 def _fit_anchors(anchors: list[dict], moved: list[tuple[float, int]]):
@@ -289,76 +351,82 @@ def _fit_anchors(anchors: list[dict], moved: list[tuple[float, int]]):
         anchor["width"] = hi - lo + 1
 
 
-def _refret_notes(notes: list[dict], delta, opens, report, moved) -> list[dict]:
-    by_time: dict[float, list[dict]] = {}
-    for n in notes:
-        by_time.setdefault(round(float(n.get("t", 0)), 3), []).append(n)
-
-    def occupied_for(note):
-        t = round(float(note.get("t", 0)), 3)
-        near = []
-        for key in (t - 0.001, t, t + 0.001):
-            near.extend(by_time.get(round(key, 3), []))
-        return lambda: {int(o.get("s", 0)) for o in near
-                        if o is not note and _same_time(o.get("t", 0), note.get("t", 0))}
-
-    return [n for n in notes
-            if _refret_note(n, delta, opens, occupied_for(n), report, moved, float(n.get("t", 0)))]
-
-
-def _refret_chord(chord: dict, delta, opens, report, moved) -> list[tuple[int, int, int]]:
-    moves = []
-    kept = []
-    notes = chord.get("notes") or []
-    for note in notes:
-        def occupied(note=note):
-            return {int(o.get("s", 0)) for o in notes if o is not note}
-        orig = (int(note.get("s", 0)), int(note.get("f", 0)))
-        if _refret_note(note, delta, opens, occupied, report, moved, float(chord.get("t", 0))):
-            kept.append(note)
-            moves.append((orig[0], int(note["s"]), int(note["f"])))
+def _time_groups(notes: list[dict]) -> list[list[dict]]:
+    groups: list[list[dict]] = []
+    for note in sorted(notes, key=lambda n: float(n.get("t", 0))):
+        t = float(note.get("t", 0))
+        if groups and _same_time(t, groups[-1][-1].get("t", 0)) \
+                and t - float(groups[-1][0].get("t", 0)) < 2 * SAME_TIME:
+            groups[-1].append(note)
         else:
-            moves.append((orig[0], -1, -1))
+            groups.append([note])
+    return groups
+
+
+def _refret_notes(notes: list[dict], plan: StringPlan, report, moved) -> list[dict]:
+    removed = set()
+    for group in _time_groups(notes):
+        kept, _ = _place_group(group, plan, report, moved, float(group[0].get("t", 0)))
+        kept_ids = {id(n) for n in kept}
+        removed.update(id(n) for n in group if id(n) not in kept_ids)
+    return [n for n in notes if id(n) not in removed]
+
+
+def _refret_chord(chord: dict, plan: StringPlan, report, moved) -> list[tuple[int, int, int]]:
+    kept, moves = _place_group(chord.get("notes") or [], plan, report, moved, float(chord.get("t", 0)))
     chord["notes"] = kept
     return moves
 
 
-def _shift_template(template: dict, delta: list[int]) -> dict:
+def _map_template(template: dict, plan: StringPlan) -> tuple[dict, dict[int, int]]:
     out = copy.deepcopy(template)
     frets = list(out.get("frets") or [])
     fingers = list(out.get("fingers") or [-1] * len(frets))
     fingers += [-1] * (len(frets) - len(fingers))
+    width = len(frets) if plan.target_count == plan.source_count else plan.target_count
+    new_frets = [-1] * width
+    new_fingers = [-1] * width
     for s, f in enumerate(frets):
-        d = delta[s] if s < len(delta) else 0
-        if f is None or f < 0 or d == 0:
+        if f is not None and f >= 0 and plan.source_count <= s < width:
+            new_frets[s], new_fingers[s] = f, fingers[s]
+    shape = [{"s": s, "f": f} for s, f in enumerate(frets)
+             if f is not None and f >= 0 and s < plan.source_count]
+    _, moves = _place_group(shape, plan, ChartReport(), [], 0.0)
+    placed: dict[int, int] = {}
+    for orig_s, new_s, new_f in moves:
+        placed[orig_s] = new_s
+        if new_s < 0:
             continue
-        nf = f + d
-        if _valid_fret(nf):
-            frets[s] = nf
-            fingers[s] = 0 if nf == 0 else -1
-        else:
-            frets[s] = -1
-            fingers[s] = -1
-    out["frets"] = frets
+        new_frets += [-1] * (new_s + 1 - len(new_frets))
+        new_fingers += [-1] * (new_s + 1 - len(new_fingers))
+        new_frets[new_s] = new_f
+        unchanged = plan.mapped(orig_s, frets[orig_s]) == (new_s, new_f) and new_f == frets[orig_s]
+        new_fingers[new_s] = fingers[orig_s] if unchanged else (0 if new_f == 0 else -1)
+    out["frets"] = new_frets
     if "fingers" in template:
-        out["fingers"] = fingers
-    return out
+        out["fingers"] = new_fingers
+    return out, placed
 
 
 class _TemplateBook:
-    def __init__(self, templates: list[dict], delta: list[int]):
+    def __init__(self, templates: list[dict], plan: StringPlan):
         self.originals = templates
-        self.templates = [_shift_template(t, delta) for t in templates]
+        mapped = [_map_template(t, plan) for t in templates]
+        self.templates = [template for template, _ in mapped]
+        self.placed = [placed for _, placed in mapped]
         self.variants: dict[tuple, int] = {}
 
     def resolve(self, old_id: int, moves: list[tuple[int, int, int]]) -> int:
-        if not (0 <= old_id < len(self.templates)):
+        if not (0 <= old_id < len(self.placed)):
             return old_id
         base = self.templates[old_id]
+        placed = self.placed[old_id]
         frets = list(base.get("frets") or [])
-        for orig_s, new_s, new_f in moves:
-            if new_s != orig_s and orig_s < len(frets):
-                frets[orig_s] = -1
+        for orig_s, new_s, _ in moves:
+            previous = placed.get(orig_s, -1)
+            if 0 <= previous < len(frets) and previous != new_s:
+                frets[previous] = -1
+        for _, new_s, new_f in moves:
             if new_s >= 0:
                 frets += [-1] * (new_s + 1 - len(frets))
                 frets[new_s] = new_f
@@ -381,13 +449,13 @@ class _TemplateBook:
         return self.variants[key]
 
 
-def _refret_layer(layer: dict, book: _TemplateBook, delta, opens, report):
+def _refret_layer(layer: dict, book: _TemplateBook, plan: StringPlan, report):
     moved: list[tuple[float, int]] = []
     if "notes" in layer:
-        layer["notes"] = _refret_notes(layer.get("notes") or [], delta, opens, report, moved)
+        layer["notes"] = _refret_notes(layer.get("notes") or [], plan, report, moved)
     usage: dict[int, list[tuple[float, int]]] = {}
     for chord in layer.get("chords") or []:
-        moves = _refret_chord(chord, delta, opens, report, moved)
+        moves = _refret_chord(chord, plan, report, moved)
         old_id = int(chord.get("id", 0))
         new_id = book.resolve(old_id, moves)
         chord["id"] = new_id
@@ -402,27 +470,27 @@ def _refret_layer(layer: dict, book: _TemplateBook, delta, opens, report):
     _fit_anchors(layer.get("anchors") or [], moved)
 
 
-def refret_arrangement(arrangement: dict, delta: list[int], opens: list[int], capo: int = 0) -> ChartReport:
+def refret_arrangement(arrangement: dict, plan: StringPlan, capo: int = 0) -> ChartReport:
     report = ChartReport()
-    if not any(delta):
+    if plan.is_identity():
         return report
     token = _highest_fret.set(MAX_FRET - max(0, int(capo or 0)))
     try:
-        return _refret_arrangement(arrangement, delta, opens, report)
+        return _refret_arrangement(arrangement, plan, report)
     finally:
         _highest_fret.reset(token)
 
 
-def _refret_arrangement(arrangement: dict, delta: list[int], opens: list[int], report: ChartReport) -> ChartReport:
-    book = _TemplateBook(arrangement.get("templates") or [], delta)
-    _refret_layer(arrangement, book, delta, opens, report)
+def _refret_arrangement(arrangement: dict, plan: StringPlan, report: ChartReport) -> ChartReport:
+    book = _TemplateBook(arrangement.get("templates") or [], plan)
+    _refret_layer(arrangement, book, plan, report)
     counts_top_level = bool(arrangement.get("notes") or arrangement.get("chords"))
     for phrase in arrangement.get("phrases") or []:
         levels = phrase.get("levels") or []
         hardest = max(levels, key=lambda lv: lv.get("difficulty", 0), default=None)
         for level in levels:
             counted = not counts_top_level and level is hardest
-            _refret_layer(level, book, delta, opens, report if counted else ChartReport())
+            _refret_layer(level, book, plan, report if counted else ChartReport())
     if "templates" in arrangement:
         arrangement["templates"] = book.templates
     return report
@@ -519,24 +587,89 @@ SIDE_FILE_TRANSFORMS = {
 }
 
 
+def chart_string_count(entry: dict, arrangement: dict | None) -> int:
+    return string_count(entry, arrangement or {}, source_tuning(entry, arrangement))
+
+
+def string_choices(entry: dict, arrangement: dict, count: int | None = None) -> list[int]:
+    if count is None:
+        count = chart_string_count(entry, arrangement)
+    choices = STRING_COUNTS[fretted_kind(entry, arrangement)]
+    return list(choices) if count in choices else [count]
+
+
+def string_alignment(std_src: list[int], std_tgt: list[int]) -> int:
+    best = None
+    for k in range(-(len(std_src) - 1), len(std_tgt)):
+        overlap = [s for s in range(len(std_src)) if 0 <= s + k < len(std_tgt)]
+        if overlap and all(std_src[s] == std_tgt[s + k] for s in overlap):
+            if best is None or len(overlap) > best[1]:
+                best = (k, len(overlap))
+    if best is None:
+        raise RetuneError("The two string layouts share no strings")
+    return best[0]
+
+
+def extended_tuning(src: list[int], shift: int, offset: int, target_count: int, drop_lowest: bool) -> list[int]:
+    base = [o + shift for o in src]
+    family = tuning_family(src)
+    level = base[1] if family in ("standard", "drop") and len(base) >= 2 else base[0]
+    if family == "drop":
+        base[0] = level
+    out = []
+    for t in range(target_count):
+        s = t - offset
+        if s < 0:
+            out.append(level)
+        elif s < len(base):
+            out.append(base[s])
+        else:
+            out.append(base[-1])
+    if drop_lowest:
+        out[0] -= 2
+    return out
+
+
 def plan_arrangement(entry: dict, arrangement: dict, ref_src: list[int], ref_std: list[int],
-                     shift: int, low_adjust: int):
+                     shift: int, low_adjust: int, strings: int | None = None, count: int | None = None):
     src = source_tuning(entry, arrangement)
-    count = string_count(entry, arrangement, src)
+    if count is None:
+        count = string_count(entry, arrangement, src)
+    src = src or [0] * count
     std = standard_open(entry, arrangement, count)
     adjust = low_adjust_for(src, std, ref_src, ref_std, low_adjust)
     tgt = target_tuning(src, shift, adjust)
-    padded = tgt + [tgt[-1] if tgt else shift] * (count - len(tgt))
-    opens = [std[s] + padded[s] for s in range(count)]
-    delta = [0] * count
-    if count:
-        delta[0] = -adjust
-    return src, tgt, delta, opens, std
+
+    def padded(offsets):
+        return (offsets + [offsets[-1]] * count)[:count]
+
+    src_opens = [std[s] + padded(src)[s] + shift for s in range(count)]
+    target_count = count if strings is None else strings
+    if target_count == count:
+        opens = [std[s] + padded(tgt)[s] for s in range(count)]
+        return StringPlan(list(range(count)), src_opens, opens), src, tgt, std, std
+
+    if target_count not in string_choices(entry, arrangement, count):
+        name = entry.get("name") or entry.get("id")
+        raise RetuneError(f"{name} can't be converted from {count} to {target_count} strings")
+    target_std = STANDARD_OPEN[(fretted_kind(entry, arrangement), target_count)]
+    offset = string_alignment(std, target_std)
+    keeps_tuning = shift == 0 and low_adjust == 0
+    drop_target = tuning_family(padded(tgt)) == "drop" and not keeps_tuning
+    tgt = extended_tuning(padded(src), shift, offset, target_count, drop_lowest=drop_target)
+    target_of = [s + offset if 0 <= s + offset < target_count else None for s in range(count)]
+    opens = [target_std[t] + tgt[t] for t in range(target_count)]
+    return StringPlan(target_of, src_opens, opens, offset), src, tgt, std, target_std
 
 
-def retune_pack(manifest: dict, files: dict[str, dict], shift: int, low_adjust: int) -> dict:
-    if shift == 0 and low_adjust == 0:
-        raise RetuneError("Target tuning is the same as the source")
+def tuning_label(offsets: list[int], std: list[int], kind: str) -> str:
+    name = tuning_name(offsets, std)
+    return name if len(std) == DEFAULT_STRINGS[kind] else f"{name} ({len(std)}-string)"
+
+
+def retune_pack(manifest: dict, files: dict[str, dict], shift: int, low_adjust: int,
+                strings: dict[str, int] | None = None, side_files: bool = True) -> dict:
+    strings = dict(strings or {})
     if abs(shift) > MAX_SHIFT:
         raise RetuneError(f"Shift is limited to ±{MAX_SHIFT} semitones")
     if low_adjust not in (-2, 0, 2):
@@ -545,6 +678,36 @@ def retune_pack(manifest: dict, files: dict[str, dict], shift: int, low_adjust: 
     if ref is None:
         raise RetuneError("The pack has no fretted arrangement to retune")
     ref_src, ref_std = reference_tuning(ref, files)
+
+    fretted = []
+    for entry in manifest.get("arrangements") or []:
+        if not is_pitched_chart(entry, files.get(entry.get("file"))):
+            continue
+        arrangement = files.get(entry["file"])
+        if arrangement is None:
+            raise RetuneError(f"Arrangement file {entry['file']} is missing")
+        fretted.append((entry, arrangement, chart_string_count(entry, arrangement)))
+
+    by_id = {entry["id"]: (entry, count) for entry, _, count in fretted if entry.get("id")}
+    for arr_id, wanted in strings.items():
+        if arr_id not in by_id:
+            raise RetuneError(f"Unknown fretted arrangement {arr_id!r}")
+        if not isinstance(wanted, int) or isinstance(wanted, bool):
+            raise RetuneError(f"String count for {arr_id!r} must be a number")
+    by_file: dict[str, tuple[str, int]] = {}
+    for entry, _, count in fretted:
+        name = entry.get("id") or entry.get("name")
+        wanted = strings.get(entry.get("id"), count)
+        other = by_file.setdefault(entry["file"], (name, wanted))
+        if other[1] != wanted:
+            raise RetuneError(f"{other[0]!r} and {name!r} share a chart file, so they need the same string count")
+    changes_strings = any(wanted != by_id[arr_id][1] for arr_id, wanted in strings.items())
+    if shift == 0 and low_adjust == 0 and not changes_strings:
+        raise RetuneError("Target tuning is the same as the source")
+
+    plans = [(entry, arrangement, plan_arrangement(entry, arrangement, ref_src, ref_std, shift, low_adjust,
+                                                   strings.get(entry.get("id")), count))
+             for entry, arrangement, count in fretted]
 
     total = ChartReport()
     arrangements = []
@@ -556,46 +719,54 @@ def retune_pack(manifest: dict, files: dict[str, dict], shift: int, low_adjust: 
         done.add(path)
         return True
 
-    for entry in manifest.get("arrangements") or []:
+    for entry in (manifest.get("arrangements") or []) if side_files and shift else []:
         notation = entry.get("notation")
-        if notation and notation in files and shift and first_time(notation):
+        if notation and notation in files and first_time(notation):
             transpose_notation(files[notation], shift)
         chart = files.get(entry.get("file"))
-        if shift and chart is not None and not entry.get("drum_tab") \
+        if chart is not None and not entry.get("drum_tab") \
                 and instrument_kind(entry, chart) == "keys" and first_time(entry["file"]):
             transpose_keys_chart(chart, shift)
-        if not is_pitched_chart(entry, chart):
-            continue
-        arrangement = files.get(entry["file"])
-        if arrangement is None:
-            raise RetuneError(f"Arrangement file {entry['file']} is missing")
-        src, tgt, delta, opens, std = plan_arrangement(entry, arrangement, ref_src, ref_std, shift, low_adjust)
+
+    for entry, arrangement, (plan, src, tgt, std, target_std) in plans:
         capo = entry.get("capo", arrangement.get("capo", 0))
-        report = refret_arrangement(arrangement, delta, opens, capo) if first_time(entry["file"]) else ChartReport()
+        report = refret_arrangement(arrangement, plan, capo) if first_time(entry["file"]) else ChartReport()
         total.add(report)
         entry["tuning"] = tgt
         if "tuning" in arrangement:
             arrangement["tuning"] = list(tgt)
+        kind = fretted_kind(entry, arrangement)
         arrangements.append({
             "id": entry.get("id"),
             "name": entry.get("name") or entry.get("id"),
-            "from": tuning_name(src, std),
-            "to": tuning_name(tgt, std),
+            "kind": kind,
+            "from": tuning_label(src, std, kind),
+            "to": tuning_label(tgt, target_std, kind),
             "tuning": tgt,
+            "strings_from": len(std),
+            "strings_to": len(target_std),
             **report.as_dict(),
         })
 
-    if shift:
+    if side_files and shift:
         for key, transform in SIDE_FILE_TRANSFORMS.items():
             path = manifest.get(key)
             if isinstance(path, str) and path in files and first_time(path):
                 transform(files[path], shift)
 
+    ref_result = next((a for (entry, *_), a in zip(plans, arrangements) if entry is ref), None)
+    to_name = ref_result["to"] if ref_result else tuning_name(target_tuning(ref_src, shift, low_adjust), ref_std)
+    covered = set()
+    if ref_result and ref_result["strings_to"] != ref_result["strings_from"]:
+        covered.add((ref_result["strings_to"], ref_result["kind"]))
+    extended = sorted({f"{a['strings_to']}-string {a['kind']}" for a in arrangements
+                       if a["strings_to"] != a["strings_from"] and (a["strings_to"], a["kind"]) not in covered})
     return {
         "shift": shift,
         "low_adjust": low_adjust,
         "from": tuning_name(ref_src, ref_std),
-        "to": tuning_name(target_tuning(ref_src, shift, low_adjust), ref_std),
+        "to": to_name,
+        "label": " ".join([to_name, *extended]),
         "arrangements": arrangements,
         "chart": total.as_dict(),
     }

@@ -27,8 +27,8 @@ def make_song(dlc_dir, tuning, audio=b"not-really-audio", chart_path="arrangemen
 
 
 def run(client, **params):
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    with client.websocket_connect(f"/ws/plugins/retune/run?{query}") as ws:
+    from urllib.parse import urlencode
+    with client.websocket_connect(f"/ws/plugins/retune/run?{urlencode(params)}") as ws:
         while True:
             msg = ws.receive_json()
             if msg.get("done") or msg.get("error"):
@@ -43,7 +43,129 @@ def test_options_lists_targets(client, dlc_dir):
     assert body["source"]["name"] == "Drop D"
     std = next(t for t in body["targets"] if t["name"] == "E Standard")
     assert (std["shift"], std["low_adjust"]) == (0, 2)
-    assert std["chart"]["octave_moved"] == 1
+    assert all("chart" not in t for t in body["targets"])
+    assert body["targets"][0]["keep"] is True
+    assert body["arrangements"] == [
+        {"ids": ["lead"], "name": "Lead", "kind": "guitar", "strings": 6, "choices": [6, 7, 8]}]
+
+
+def make_band(dlc_dir):
+    manifest = {
+        "title": "Song", "artist": "Band", "duration": 2.0,
+        "arrangements": [
+            {"id": "lead", "name": "Lead", "file": "arrangements/lead.json", "tuning": [-2, 0, 0, 0, 0, 0]},
+            {"id": "bass", "name": "Bass", "type": "bass", "file": "arrangements/bass.json",
+             "tuning": [-2, 0, 0, 0]},
+        ],
+        "stems": [{"id": "full", "file": "stems/full.ogg", "default": True}],
+    }
+    chart = {"tuning": [-2, 0, 0, 0], "notes": [{"t": 0.5, "s": 0, "f": 0}], "chords": [],
+             "anchors": [], "handshapes": [], "templates": []}
+    return write_pack(dlc_dir / "Band.feedpak", manifest, {
+        "arrangements/lead.json": dict(chart, name="Lead", tuning=[-2, 0, 0, 0, 0, 0]),
+        "arrangements/bass.json": dict(chart, name="Bass"),
+        "stems/full.ogg": b"audio",
+    })
+
+
+def test_arrangement_without_id_gets_no_string_picker(client, dlc_dir):
+    manifest = {
+        "title": "Song", "artist": "Band", "duration": 2.0,
+        "arrangements": [{"name": "Lead", "file": "arrangements/lead.json", "tuning": [0] * 6}],
+        "stems": [{"id": "full", "file": "stems/full.ogg", "default": True}],
+    }
+    write_pack(dlc_dir / "NoId.feedpak", manifest, {
+        "arrangements/lead.json": {"tuning": [0] * 6, "notes": [{"t": 0.5, "s": 0, "f": 3}]},
+        "stems/full.ogg": b"audio"})
+    r = client.get("/api/plugins/retune/options", params={"filename": "NoId.feedpak"})
+    assert r.status_code == 200, r.text
+    assert r.json()["arrangements"][0]["choices"] == [6]
+
+
+def test_arrangements_sharing_a_chart_get_one_picker(client, dlc_dir):
+    manifest = {
+        "title": "Song", "artist": "Band", "duration": 2.0,
+        "arrangements": [
+            {"id": "lead", "name": "Lead", "file": "arrangements/lead.json", "tuning": [0] * 6},
+            {"id": "bass", "name": "Bass", "type": "bass", "file": "arrangements/bass.json", "tuning": [0] * 4},
+            {"id": "bass2", "name": "Bass 2", "type": "bass", "file": "arrangements/bass.json", "tuning": [0] * 4},
+        ],
+        "stems": [{"id": "full", "file": "stems/full.ogg", "default": True}],
+    }
+    chart = {"tuning": [0] * 4, "notes": [{"t": 0.5, "s": 0, "f": 3}]}
+    write_pack(dlc_dir / "Shared.feedpak", manifest, {
+        "arrangements/lead.json": dict(chart, tuning=[0] * 6), "arrangements/bass.json": chart,
+        "stems/full.ogg": b"audio"})
+
+    body = client.get("/api/plugins/retune/options", params={"filename": "Shared.feedpak"}).json()
+
+    assert [a["ids"] for a in body["arrangements"]] == [["lead"], ["bass", "bass2"]]
+    assert body["arrangements"][1]["name"] == "Bass, Bass 2"
+    r = client.get("/api/plugins/retune/preview", params={
+        "filename": "Shared.feedpak", "strings": json.dumps({"bass": 5, "bass2": 5})})
+    assert r.status_code == 200, r.text
+
+
+def test_read_only_chart_loads_share_the_cached_copy(client, dlc_dir):
+    from conftest import load_sibling
+    routes = load_sibling("routes")
+    src = make_song(dlc_dir, [-2, 0, 0, 0, 0, 0])
+
+    first = routes._load_charts(src, mutable=False)
+    second = routes._load_charts(src, mutable=False)
+
+    assert first is second
+    assert routes._load_charts(src)[0] is not first[0]
+
+
+def test_chart_cache_returns_copies_and_follows_file_changes(client, dlc_dir):
+    import os
+    from conftest import load_sibling
+    routes = load_sibling("routes")
+    src = make_song(dlc_dir, [-2, 0, 0, 0, 0, 0])
+
+    first, _ = routes._load_charts(src)
+    first["arrangements"][0]["tuning"] = "mutated"
+    second, _ = routes._load_charts(src)
+    assert second["arrangements"][0]["tuning"] == [-2, 0, 0, 0, 0, 0]
+
+    make_song(dlc_dir, [0] * 6)
+    os.utime(src, ns=(1, 1))
+    third, _ = routes._load_charts(src)
+    assert third["arrangements"][0]["tuning"] == [0] * 6
+
+
+def test_preview_reports_a_string_count_change(client, dlc_dir):
+    make_band(dlc_dir)
+    r = client.get("/api/plugins/retune/preview", params={
+        "filename": "Band.feedpak", "shift": 0, "low_adjust": 2, "strings": json.dumps({"bass": 5})})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["label"] == "E Standard 5-string bass"
+    bass = next(a for a in body["arrangements"] if a["id"] == "bass")
+    assert (bass["to"], bass["strings_to"], bass["relocated"]) == ("E Standard (5-string)", 5, 1)
+
+
+@pytest.mark.parametrize("strings", ['{"bass": 9}', "[5]", "not json"])
+def test_preview_rejects_bad_string_counts(client, dlc_dir, strings):
+    make_band(dlc_dir)
+    r = client.get("/api/plugins/retune/preview", params={
+        "filename": "Band.feedpak", "shift": 0, "low_adjust": 2, "strings": strings})
+    assert r.status_code == 400
+
+
+def test_run_converts_a_four_string_bass_to_five_strings(client, dlc_dir):
+    make_band(dlc_dir)
+
+    msg = run(client, filename="Band.feedpak", shift=0, low_adjust=2, strings=json.dumps({"bass": 5}))
+
+    assert msg.get("done"), msg
+    assert msg["filename"] == "Band_E_Standard_5_string_bass.feedpak"
+    manifest, files = read_pack(dlc_dir / msg["filename"])
+    assert manifest["arrangements"][1]["tuning"] == [0, 0, 0, 0, 0]
+    assert manifest["arrangements"][0]["tuning"] == [0] * 6
+    chart = json.loads(files["arrangements/bass.json"])
+    assert (chart["notes"][0]["s"], chart["notes"][0]["f"]) == (0, 3)
 
 
 @pytest.mark.parametrize("filename", ["../outside.feedpak", "/etc/passwd"])

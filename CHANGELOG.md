@@ -4,6 +4,23 @@ All notable changes to the Retune plugin are documented here.
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Added
+
+- Convert guitar and bass arrangements to a different string count (bass 4/5, guitar 6/7/8), on
+  its own or together with a tuning change. Strings are matched by their standard open notes, added
+  low strings use standard tuning, and notes below the old low string move onto the new one instead
+  of jumping an octave.
+- **Current tuning (change strings only)** target, for conversions that only change the string count.
+- The dialog previews the effect of the chosen tuning and string counts before converting
+  (`GET /api/plugins/retune/preview`).
+
+### Changed
+
+- Converted packs whose string count changed are named after it, e.g.
+  `<name>_Drop_D_5_string_bass.feedpak`.
+
 ## [0.1.0]
 
 ### Added

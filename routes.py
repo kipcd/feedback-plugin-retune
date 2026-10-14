@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import os
 import tempfile
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -31,15 +33,24 @@ def setup(app, context):
     def options(filename: str):
         path = _resolve(filename)
         try:
-            with pack_io.Pack(path) as pack:
-                manifest = pack.manifest()
-                files = pack_io.load_json_files(pack, pack_io.chart_files(manifest))
+            manifest, files = _load_charts(path, mutable=False)
             return _options(manifest, files)
         except (pack_io.PackError, core.RetuneError) as e:
             raise HTTPException(400, str(e)) from e
 
+    @app.get("/api/plugins/retune/preview")
+    def preview(filename: str, shift: int = 0, low_adjust: int = 0, strings: str = ""):
+        path = _resolve(filename)
+        try:
+            manifest, files = _load_charts(path)
+            report = core.retune_pack(manifest, files, shift, low_adjust, _parse_strings(strings), side_files=False)
+        except (pack_io.PackError, core.RetuneError) as e:
+            raise HTTPException(400, str(e)) from e
+        return {key: report[key] for key in ("label", "from", "to", "chart", "arrangements")}
+
     @app.websocket("/ws/plugins/retune/run")
-    async def run(websocket: WebSocket, filename: str, shift: int = 0, low_adjust: int = 0):
+    async def run(websocket: WebSocket, filename: str, shift: int = 0, low_adjust: int = 0,
+                  strings: str = ""):
         await websocket.accept()
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
@@ -49,7 +60,8 @@ def setup(app, context):
 
         def job():
             try:
-                emit({"done": True, "progress": 100, **_retune(filename, shift, low_adjust, emit)})
+                counts = _parse_strings(strings)
+                emit({"done": True, "progress": 100, **_retune(filename, shift, low_adjust, counts, emit)})
             except HTTPException as e:
                 emit({"error": e.detail})
             except (core.RetuneError, pack_io.PackError, audio.AudioError) as e:
@@ -68,6 +80,42 @@ def setup(app, context):
             await websocket.close()
         except WebSocketDisconnect:
             pass
+
+
+_chart_cache: OrderedDict[tuple, tuple[dict, dict]] = OrderedDict()
+_chart_cache_lock = threading.Lock()
+CHART_CACHE_SIZE = 4
+
+
+def _load_charts(path: Path, mutable: bool = True) -> tuple[dict, dict]:
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    with _chart_cache_lock:
+        cached = _chart_cache.get(key)
+        if cached is not None:
+            _chart_cache.move_to_end(key)
+    if cached is None:
+        with pack_io.Pack(path) as pack:
+            manifest = pack.manifest()
+            files = pack_io.load_json_files(pack, pack_io.chart_files(manifest))
+        cached = (manifest, files)
+        with _chart_cache_lock:
+            _chart_cache[key] = cached
+            while len(_chart_cache) > CHART_CACHE_SIZE:
+                _chart_cache.popitem(last=False)
+    return copy.deepcopy(cached) if mutable else cached
+
+
+def _parse_strings(raw: str) -> dict[str, int]:
+    if not raw:
+        return {}
+    try:
+        counts = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise core.RetuneError("String counts must be a JSON object") from e
+    if not isinstance(counts, dict):
+        raise core.RetuneError("String counts must be a JSON object")
+    return counts
 
 
 def _dlc_dir() -> Path:
@@ -97,11 +145,29 @@ def _options(manifest: dict, files: dict) -> dict:
     if ref is None:
         raise HTTPException(400, "This song has no fretted arrangement to retune")
     ref_src, ref_std = core.reference_tuning(ref, files)
-    chart_by_adjust = {}
-    targets = core.list_targets(ref_src, ref_std)
-    for adjust in {t["low_adjust"] for t in targets if t["low_adjust"]}:
-        report = core.retune_pack(copy.deepcopy(manifest), copy.deepcopy(files), 0, adjust)
-        chart_by_adjust[adjust] = report["chart"]
+    groups: dict[str, dict] = {}
+    for entry in manifest.get("arrangements") or []:
+        chart = files.get(entry.get("file"))
+        if not core.is_pitched_chart(entry, chart):
+            continue
+        strings = core.chart_string_count(entry, chart)
+        group = groups.setdefault(entry["file"], {
+            "ids": [],
+            "names": [],
+            "kind": core.fretted_kind(entry, chart),
+            "strings": strings,
+            "choices": core.string_choices(entry, chart, strings),
+        })
+        group["names"].append(entry.get("name") or entry.get("id") or entry["file"])
+        if entry.get("id"):
+            group["ids"].append(entry["id"])
+        else:
+            group["choices"] = [group["strings"]]
+    arrangements = [
+        {"ids": g["ids"], "name": ", ".join(g["names"]), "kind": g["kind"],
+         "strings": g["strings"], "choices": g["choices"]}
+        for g in groups.values()
+    ]
     ffmpeg = audio.find_ffmpeg()
     return {
         "title": manifest.get("title", ""),
@@ -109,11 +175,12 @@ def _options(manifest: dict, files: dict) -> dict:
         "source": {"name": core.tuning_name(ref_src, ref_std), "offsets": ref_src},
         "ffmpeg": bool(ffmpeg),
         "rubberband": bool(ffmpeg) and audio.has_rubberband(ffmpeg),
-        "targets": [{**t, "chart": chart_by_adjust.get(t["low_adjust"])} for t in targets],
+        "arrangements": arrangements,
+        "targets": core.list_targets(ref_src, ref_std),
     }
 
 
-def _retune(filename: str, shift: int, low_adjust: int, emit) -> dict:
+def _retune(filename: str, shift: int, low_adjust: int, strings: dict[str, int], emit) -> dict:
     path = _resolve(filename)
     emit({"stage": "Reading pack…", "progress": 2})
     with pack_io.Pack(path) as pack, tempfile.TemporaryDirectory(prefix="retune-") as tmp:
@@ -123,12 +190,12 @@ def _retune(filename: str, shift: int, low_adjust: int, emit) -> dict:
         files.update(pack_io.load_json_files(pack, side, required=False))
 
         emit({"stage": "Rewriting charts…", "progress": 5})
-        report = core.retune_pack(manifest, files, shift, low_adjust)
+        report = core.retune_pack(manifest, files, shift, low_adjust, strings)
 
         replacements: dict = {pack.manifest_name: pack_io.dump_manifest(manifest)}
         replacements.update({rel: pack_io.dump_json(doc) for rel, doc in files.items()})
 
-        out_path = pack_io.output_path(path, report["to"])
+        out_path = pack_io.output_path(path, report["label"])
         try:
             method = _shift_audio(pack, manifest, shift, Path(tmp), replacements, emit) if shift else None
             emit({"stage": "Writing new pack…", "progress": 92})

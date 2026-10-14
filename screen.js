@@ -3,6 +3,7 @@
 
     const PLUGIN_ID = 'retune';
     const ACTION_ID = 'retune.convert';
+    const PREVIEW_DELAY_MS = 250;
     const hooks = window.__feedBackRetune || (window.__feedBackRetune = {});
 
     function el(tag, className, text) {
@@ -23,9 +24,9 @@
 
     function chartSummary(chart) {
         if (!chart || !chart.refretted) return 'Frets stay the same — only the tuning changes.';
-        const parts = [`${chart.refretted} low-string note${chart.refretted === 1 ? '' : 's'} re-fretted`];
+        const parts = [`${chart.refretted} note${chart.refretted === 1 ? '' : 's'} re-fretted`];
         if (chart.relocated) parts.push(`${chart.relocated} moved to another string`);
-        if (chart.octave_moved) parts.push(`${chart.octave_moved} moved up an octave (below the new low string)`);
+        if (chart.octave_moved) parts.push(`${chart.octave_moved} moved up an octave (below the lowest string)`);
         if (chart.removed) parts.push(`${chart.removed} unplayable and removed`);
         if (chart.slides_cleared) parts.push(`${chart.slides_cleared} slide${chart.slides_cleared === 1 ? '' : 's'} dropped`);
         if (chart.harmonics_moved) parts.push(`${chart.harmonics_moved} harmonic${chart.harmonics_moved === 1 ? '' : 's'} on a moved fret`);
@@ -33,10 +34,11 @@
     }
 
     function targetLabel(t) {
-        return `${t.name} — ${audioChange(t.shift)}`;
+        return t.keep ? `${t.name} — current tuning (change strings only)` : `${t.name} — ${audioChange(t.shift)}`;
     }
 
     function groupFor(t) {
+        if (t.keep) return 'Current';
         if (t.family === 'standard') return 'Standard';
         if (t.family === 'drop') return 'Drop';
         return 'Shifted';
@@ -104,7 +106,7 @@
     function defaultTarget(options) {
         const usable = options.targets
             .map((t, i) => ({ t, i }))
-            .filter(({ t }) => !t.shift || options.ffmpeg);
+            .filter(({ t }) => !t.keep && (!t.shift || options.ffmpeg));
         const estd = usable.find(({ t }) => t.name === 'E Standard');
         if (estd) return String(estd.i);
         usable.sort((a, b) => (Math.abs(a.t.shift) + (a.t.low_adjust ? 0.5 : 0))
@@ -113,8 +115,8 @@
     }
 
     function renderPicker(body, song, options) {
-        const current = el('p', 'plugin-retune-current');
-        current.append('Current tuning: ', el('strong', '', options.source.name));
+        const currentTuning = el('p', 'plugin-retune-current');
+        currentTuning.append('Current tuning: ', el('strong', '', options.source.name));
 
         const select = el('select', 'plugin-retune-select');
         select.setAttribute('aria-label', 'Target tuning');
@@ -138,14 +140,88 @@
             return opt && !opt.disabled ? options.targets[Number(opt.value)] : null;
         };
 
+        const stringsBox = el('div', 'plugin-retune-strings');
+        const stringSelects = [];
+        for (const a of options.arrangements || []) {
+            if (!a.choices || a.choices.length < 2) continue;
+            const row = el('label', 'plugin-retune-string-row');
+            row.append(el('span', '', `${a.name} strings`));
+            const pick = el('select', 'plugin-retune-select plugin-retune-select-small');
+            for (const n of a.choices) {
+                const opt = el('option', '', n === a.strings ? `${n} (current)` : String(n));
+                opt.value = String(n);
+                pick.appendChild(opt);
+            }
+            pick.value = String(a.strings);
+            row.append(pick);
+            stringsBox.append(row);
+            stringSelects.push({ arrangement: a, pick });
+        }
+        const changedStrings = () => {
+            const counts = {};
+            for (const { arrangement, pick } of stringSelects) {
+                const n = Number(pick.value);
+                if (n !== arrangement.strings) for (const id of arrangement.ids) counts[id] = n;
+            }
+            return counts;
+        };
+
+        let previewSeq = 0;
+        let previewTimer = null;
+        let previewAbort = null;
+        let current = null;
         const detail = el('div', 'plugin-retune-detail');
         const describe = () => {
             const t = selected();
-            convertButton.disabled = !t;
+            const counts = changedStrings();
+            const seq = ++previewSeq;
+            current = null;
+            convertButton.disabled = true;
+            clearTimeout(previewTimer);
+            if (previewAbort) previewAbort.abort();
+            previewAbort = null;
             detail.replaceChildren();
             if (!t) return;
-            detail.appendChild(el('p', '', t.shift ? `Audio: pitch-shifted ${semitones(t.shift)}.` : 'Audio: unchanged.'));
-            detail.appendChild(el('p', '', `Chart: ${chartSummary(t.chart)}`));
+            if (t.keep && !Object.keys(counts).length) {
+                detail.appendChild(el('p', 'plugin-retune-dim', 'Pick a target tuning or change a string count.'));
+                return;
+            }
+            detail.appendChild(el('p', 'plugin-retune-dim', 'Checking the chart…'));
+            previewTimer = setTimeout(() => showPreview(t, counts, seq), PREVIEW_DELAY_MS);
+        };
+        const showPreview = async (t, counts, seq) => {
+            previewAbort = new AbortController();
+            let preview;
+            try {
+                const qs = new URLSearchParams({
+                    filename: song.filename, shift: t.shift, low_adjust: t.low_adjust, strings: JSON.stringify(counts),
+                });
+                const r = await fetch(`/api/plugins/${PLUGIN_ID}/preview?${qs}`, { signal: previewAbort.signal });
+                const text = await r.text();
+                try { preview = JSON.parse(text); } catch (_) { preview = null; }
+                if (!r.ok || !preview) throw new Error((preview && preview.detail) || `HTTP ${r.status}`);
+            } catch (e) {
+                if (seq !== previewSeq) return;
+                detail.replaceChildren(el('p', 'plugin-retune-error', e.message));
+                return;
+            }
+            if (seq !== previewSeq) return;
+            current = { target: t, counts, preview };
+            convertButton.disabled = false;
+            detail.replaceChildren(
+                el('p', '', t.shift ? `Audio: pitch-shifted ${semitones(t.shift)}.` : 'Audio: unchanged.'),
+                el('p', '', `Chart: ${chartSummary(preview.chart)}`),
+            );
+            for (const a of preview.arrangements || []) {
+                if (a.strings_from !== a.strings_to) {
+                    detail.appendChild(el('p', 'plugin-retune-dim', `${a.name}: ${a.from} → ${a.to}`));
+                }
+            }
+            const undropped = (preview.arrangements || []).some((a) => a.strings_to > a.strings_from
+                && /^Drop /.test(a.from) && !/^Drop /.test(a.to));
+            if (undropped) {
+                detail.appendChild(el('p', 'plugin-retune-dim', 'Adding a string returns a dropped low string to standard — the new string covers its notes.'));
+            }
             if (t.large_shift) detail.appendChild(el('p', 'plugin-retune-warn', 'Shifts beyond 3 semitones start to sound processed.'));
             if (t.shift && !options.rubberband) {
                 detail.appendChild(el('p', 'plugin-retune-warn', 'This ffmpeg has no rubberband filter — using a lower-quality resample shift.'));
@@ -158,28 +234,30 @@
         const actions = buttons(
             ['Cancel', 'plugin-retune-btn-ghost', closeModal],
             ['Convert', 'plugin-retune-btn-primary', () => {
-                const t = selected();
-                if (t) convert(body, song, t);
+                if (current) convert(body, song, current);
             }],
         );
         const convertButton = actions.querySelector('.plugin-retune-btn-primary');
         select.addEventListener('change', describe);
+        for (const { pick } of stringSelects) pick.addEventListener('change', describe);
         describe();
 
-        body.replaceChildren(current, select, detail, ...notes, actions);
+        body.replaceChildren(currentTuning, select, stringsBox, detail, ...notes, actions);
         select.focus();
     }
 
-    function convert(body, song, target) {
+    function convert(body, song, { target, counts, preview }) {
         hooks.busy = true;
         const bar = el('div', 'plugin-retune-bar');
         const fill = el('div', 'plugin-retune-fill');
         bar.appendChild(fill);
         const stage = el('p', 'plugin-retune-dim', 'Starting…');
-        body.replaceChildren(el('p', '', `Converting to ${target.name}…`), bar, stage);
+        body.replaceChildren(el('p', '', `Converting to ${preview.label}…`), bar, stage);
 
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const qs = new URLSearchParams({ filename: song.filename, shift: target.shift, low_adjust: target.low_adjust });
+        const qs = new URLSearchParams({
+            filename: song.filename, shift: target.shift, low_adjust: target.low_adjust, strings: JSON.stringify(counts),
+        });
         const ws = new WebSocket(`${proto}//${location.host}/ws/plugins/${PLUGIN_ID}/run?${qs}`);
         let finished = false;
         ws.onmessage = (ev) => {
@@ -207,9 +285,9 @@
     function showDone(body, msg) {
         try { window.feedBack?.emit('library:changed', { reason: 'retune', filename: msg.filename }); } catch (_) { /* */ }
         const report = msg.report || {};
-        const lines = [el('p', 'plugin-retune-done', `${report.from} → ${report.to}`), el('p', 'plugin-retune-dim', msg.filename)];
+        const lines = [el('p', 'plugin-retune-done', `${report.from} → ${report.label || report.to}`), el('p', 'plugin-retune-dim', msg.filename)];
         for (const a of report.arrangements || []) {
-            lines.push(el('p', 'plugin-retune-dim', `${a.name}: ${a.from} → ${a.to}`));
+            if (a.from !== a.to) lines.push(el('p', 'plugin-retune-dim', `${a.name}: ${a.from} → ${a.to}`));
         }
         lines.push(el('p', '', chartSummary(report.chart)));
         if (msg.audio_method === 'resample') lines.push(el('p', 'plugin-retune-warn', 'Audio was shifted with the lower-quality resample method.'));

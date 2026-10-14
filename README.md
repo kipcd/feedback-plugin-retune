@@ -2,7 +2,9 @@
 
 Convert a feedpak song to another tuning. Retune pitch-shifts every audio stem and rewrites the
 charts so the song plays in the tuning you're already in: Eb Standard → E Standard, Drop C → Drop D,
-C Standard → Drop C, and so on.
+C Standard → Drop C, and so on. It can also convert a chart to a different number of strings, so a
+4-string Drop D bass part plays on a 5-string bass in E Standard, or a 6-string part on a 7- or
+8-string guitar.
 
 The original song is never modified. The converted copy is written next to it as
 `<name>_<Tuning>.feedpak` and shows up in the library straight away.
@@ -34,6 +36,7 @@ Pick a target from the **Retune…** entry in a feedpak song card's menu. The pl
 | a Standard | the Drop with the same top strings (E Std → Drop D, Eb Std → Drop C#…) | unchanged | low string re-fretted |
 | a Standard / Drop | any Drop / Standard | shifted | low string re-fretted |
 | any other tuning (Open G, DADGAD…) | the same tuning shifted up/down | shifted | frets unchanged |
+| a 4/5-string bass or 6/7/8-string guitar | another string count of the same instrument | unchanged (unless combined with a tuning change) | notes moved to the matching strings |
 
 ### How the chart is rewritten
 
@@ -54,6 +57,29 @@ Pitch data stored alongside the chart is transposed by the same shift: keys/pian
 notation (notes and key signatures), vocal pitch, the vocal pitch contour, `keys.json` and
 `harmony.json`. Drum tabs, lyrics and
 timing are unchanged.
+
+### Changing the number of strings
+
+Each guitar and bass arrangement can also be converted to a different string count: bass to 4 or 5
+strings, guitar to 6, 7 or 8. This combines with the tuning target, or works on its own with the
+**current tuning (change strings only)** target — for example a 4-string Drop D bass becomes a 5-string
+bass in E Standard while the guitar stays in Drop D. Arrangements that share a chart file get one
+string-count picker.
+
+6-string bass isn't offered: feedBack can't tell a 6-string bass tuning from the 6-slot tuning older
+charts pad every bass to, so a converted chart would display with the wrong number of strings.
+
+- Strings are matched by their standard open notes, so a 4-string bass sits on the E A D G strings of
+  a 5-string, and a 6-string guitar on the top six strings of a 7-string. Notes keep their pitch.
+- With the current tuning or a Standard target, added low strings use standard tuning and a dropped
+  low string goes back to standard: the new low string covers the notes the drop was for. Notes below
+  the old low string move onto it (an open D becomes fret 3 on the B string) instead of jumping up an
+  octave.
+- With a Drop target (e.g. E Standard → Drop D, or Drop D → Drop C), the drop goes on the new lowest
+  string, so a 6-string converted to a 7-string becomes Drop A or Drop G. The same applies when
+  removing strings: a 7-string in Drop A becomes a 6-string in Drop D.
+- Removing strings works too (5 → 4, 7 → 6); notes from the removed string move to the nearest
+  string, or up an octave when they are below the new lowest string.
 
 ### Audio quality
 

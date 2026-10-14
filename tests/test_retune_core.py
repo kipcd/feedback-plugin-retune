@@ -48,7 +48,9 @@ def test_seven_string_drop_is_named_after_its_low_string(core):
 
 
 def test_targets_from_eb_standard_cover_standard_and_drop(core):
-    targets = {t["name"]: t for t in core.list_targets([-1] * 6, core.STANDARD_OPEN[("guitar", 6)])}
+    keep, *rest = core.list_targets([-1] * 6, core.STANDARD_OPEN[("guitar", 6)])
+    targets = {t["name"]: t for t in rest}
+    assert keep["keep"] and keep["name"] == "Eb Standard" and (keep["shift"], keep["low_adjust"]) == (0, 0)
     assert (targets["E Standard"]["shift"], targets["E Standard"]["low_adjust"]) == (1, 0)
     assert (targets["Drop D"]["shift"], targets["Drop D"]["low_adjust"]) == (1, -2)
     assert (targets["Drop C#"]["shift"], targets["Drop C#"]["low_adjust"]) == (0, -2)
@@ -132,10 +134,10 @@ def test_drop_d_to_e_standard_refrets_low_string(core):
     assert power_g["id"] == 1
     assert arr["templates"][1]["frets"] == [3, 5, 5, -1, -1, -1]
     assert arr["templates"][1]["fingers"] == [-1, 1, 1, -1, -1, -1]
-    assert power_open["id"] == 2
-    assert arr["templates"][2]["frets"] == [10, 0, 0, -1, -1, -1]
-    assert arr["templates"][0]["frets"] == [-1, 0, 0, -1, -1, -1]
-    assert arr["handshapes"][0]["chord_id"] == 2
+    assert power_open["id"] == 0
+    assert arr["templates"][0]["frets"] == [10, 0, 0, -1, -1, -1]
+    assert len(arr["templates"]) == 2
+    assert arr["handshapes"][0]["chord_id"] == 0
     assert report["chart"]["octave_moved"] == 2
     assert report["chart"]["refretted"] == 4
 
@@ -386,3 +388,335 @@ def test_capo_lowers_the_highest_playable_fret(core):
     assert (note["s"], note["f"]) == (1, 16)
     assert report["chart"]["relocated"] == 1
     assert core._highest_fret.get() == core.MAX_FRET
+
+
+def bass(tuning, notes=None, chords=None, templates=None):
+    return lead(tuning, notes=notes, chords=chords, templates=templates, name="Bass")
+
+
+@pytest.mark.parametrize("kind,src,tgt,offset", [
+    ("bass", 4, 5, 1), ("bass", 5, 6, 0), ("bass", 4, 6, 1), ("bass", 5, 4, -1),
+    ("guitar", 6, 7, 1), ("guitar", 6, 8, 2), ("guitar", 7, 6, -1),
+])
+def test_string_alignment_matches_shared_open_strings(core, kind, src, tgt, offset):
+    assert core.string_alignment(core.STANDARD_OPEN[(kind, src)], core.STANDARD_OPEN[(kind, tgt)]) == offset
+
+
+def test_four_string_drop_d_bass_to_five_string_standard(core):
+    notes = [{"t": 1.0, "s": 0, "f": 0}, {"t": 2.0, "s": 0, "f": 5}, {"t": 3.0, "s": 1, "f": 2}]
+    chords = [{"t": 4.0, "id": 0, "notes": [{"s": 0, "f": 0}, {"s": 1, "f": 0}]}]
+    templates = [{"name": "D5", "fingers": [0, 0, -1, -1], "frets": [0, 0, -1, -1]}]
+    files = {
+        "arrangements/lead.json": lead([-2, 0, 0, 0, 0, 0]),
+        "arrangements/bass.json": bass([-2, 0, 0, 0], notes=notes, chords=chords, templates=templates),
+    }
+    manifest = manifest_for([-2, 0, 0, 0, 0, 0], [-2, 0, 0, 0])
+
+    report = core.retune_pack(manifest, files, 0, 2, {"bass": 5})
+
+    chart = files["arrangements/bass.json"]
+    assert manifest["arrangements"][1]["tuning"] == [0, 0, 0, 0, 0]
+    assert chart["tuning"] == [0, 0, 0, 0, 0]
+    assert [(n["s"], n["f"]) for n in chart["notes"]] == [(0, 3), (1, 3), (2, 2)]
+    assert [(n["s"], n["f"]) for n in chart["chords"][0]["notes"]] == [(0, 3), (2, 0)]
+    assert chart["chords"][0]["id"] == 0
+    assert chart["templates"] == [{"name": "D5", "fingers": [-1, -1, 0, -1, -1], "frets": [3, -1, 0, -1, -1]}]
+    bass_report = report["arrangements"][1]
+    assert (bass_report["from"], bass_report["to"]) == ("Drop D", "E Standard (5-string)")
+    assert (bass_report["strings_from"], bass_report["strings_to"]) == (4, 5)
+    assert bass_report["relocated"] == 2 and bass_report["octave_moved"] == 0
+    assert report["label"] == "E Standard 5-string bass"
+
+
+def test_drop_d_bass_becomes_five_string_standard_while_the_guitar_keeps_drop_d(core):
+    guitar_notes = [{"t": 1.0, "s": 0, "f": 0}, {"t": 2.0, "s": 0, "f": 5}]
+    bass_notes = [{"t": 1.0, "s": 0, "f": 0}, {"t": 2.0, "s": 0, "f": 5}]
+    files = {
+        "arrangements/lead.json": lead([-2, 0, 0, 0, 0, 0], notes=copy.deepcopy(guitar_notes)),
+        "arrangements/bass.json": bass([-2, 0, 0, 0], notes=bass_notes),
+    }
+    manifest = manifest_for([-2, 0, 0, 0, 0, 0], [-2, 0, 0, 0])
+
+    report = core.retune_pack(manifest, files, 0, 0, {"bass": 5})
+
+    assert manifest["arrangements"][0]["tuning"] == [-2, 0, 0, 0, 0, 0]
+    assert files["arrangements/lead.json"]["notes"] == guitar_notes
+    assert manifest["arrangements"][1]["tuning"] == [0, 0, 0, 0, 0]
+    assert [(n["s"], n["f"]) for n in files["arrangements/bass.json"]["notes"]] == [(0, 3), (1, 3)]
+    assert report["label"] == "Drop D 5-string bass"
+    assert report["arrangements"][1]["to"] == "E Standard (5-string)"
+
+
+def test_adding_a_string_without_changing_the_tuning(core):
+    notes = [{"t": 1.0, "s": 0, "f": 3, "fg": 1}, {"t": 2.0, "s": 3, "f": 7}]
+    files = {
+        "arrangements/lead.json": lead([0] * 6),
+        "arrangements/bass.json": bass([0, 0, 0, 0], notes=notes),
+    }
+    manifest = manifest_for([0] * 6, [0, 0, 0, 0])
+
+    report = core.retune_pack(manifest, files, 0, 0, {"bass": 5})
+
+    assert [(n["s"], n["f"]) for n in files["arrangements/bass.json"]["notes"]] == [(1, 3), (4, 7)]
+    assert files["arrangements/bass.json"]["notes"][0]["fg"] == 1
+    assert manifest["arrangements"][1]["tuning"] == [0] * 5
+    assert manifest["arrangements"][0]["tuning"] == [0] * 6
+    assert report["chart"]["refretted"] == 0
+    assert report["label"] == "E Standard 5-string bass"
+
+
+def test_six_string_drop_d_guitar_to_seven_string_standard(core):
+    notes = [{"t": 1.0, "s": 0, "f": 0}, {"t": 2.0, "s": 0, "f": 5}, {"t": 3.0, "s": 5, "f": 12}]
+    files = {"arrangements/lead.json": lead([-2, 0, 0, 0, 0, 0], notes=notes)}
+
+    core.retune_pack(manifest_for([-2, 0, 0, 0, 0, 0]), files, 0, 2, {"lead": 7})
+
+    chart = files["arrangements/lead.json"]
+    assert chart["tuning"] == [0] * 7
+    assert [(n["s"], n["f"]) for n in chart["notes"]] == [(0, 3), (1, 3), (6, 12)]
+
+
+def test_removing_the_low_b_moves_its_notes_to_the_e_string(core):
+    notes = [{"t": 1.0, "s": 0, "f": 5}, {"t": 2.0, "s": 0, "f": 0}, {"t": 3.0, "s": 1, "f": 3}]
+    entry = {"id": "bass", "name": "Bass", "type": "bass", "file": "arrangements/bass.json", "tuning": [0] * 5}
+    manifest = manifest_for([0] * 6)
+    manifest["arrangements"].append(entry)
+    files = {"arrangements/lead.json": lead([0] * 6),
+             "arrangements/bass.json": bass([0] * 5, notes=notes)}
+
+    report = core.retune_pack(manifest, files, 0, 0, {"bass": 4})
+
+    assert [(n["s"], n["f"]) for n in files["arrangements/bass.json"]["notes"]] == [(0, 0), (0, 7), (0, 3)]
+    assert entry["tuning"] == [0] * 4
+    assert report["chart"]["relocated"] == 1 and report["chart"]["octave_moved"] == 1
+
+
+def test_six_string_bass_is_not_offered(core):
+    entry = {"id": "bass", "name": "Bass", "type": "bass", "file": "arrangements/bass.json", "tuning": [0] * 5}
+    manifest = manifest_for([0] * 6)
+    manifest["arrangements"].append(entry)
+    files = {"arrangements/lead.json": lead([0] * 6),
+             "arrangements/bass.json": bass([0] * 5, notes=[{"t": 1.0, "s": 0, "f": 2}])}
+
+    with pytest.raises(core.RetuneError, match="from 5 to 6"):
+        core.retune_pack(manifest, files, 0, 0, {"bass": 6})
+
+
+def test_zero_strings_is_rejected_not_treated_as_no_change(core):
+    files = {"arrangements/lead.json": lead([0] * 6)}
+    with pytest.raises(core.RetuneError, match="from 6 to 0"):
+        core.retune_pack(manifest_for([0] * 6), files, 0, 0, {"lead": 0})
+
+
+def test_added_string_on_an_unusual_tuning_sits_a_fourth_below(core):
+    src = [-7, -7, -7, -7, -7, 0]
+    assert core.tuning_family(src) == "other"
+    files = {"arrangements/lead.json": lead(src, notes=[{"t": 1.0, "s": 0, "f": 0}])}
+
+    core.retune_pack(manifest_for(src), files, 0, 0, {"lead": 7})
+
+    tuning = files["arrangements/lead.json"]["tuning"]
+    opens = [o + p for o, p in zip(core.STANDARD_OPEN[("guitar", 7)], tuning)]
+    assert opens[1] - opens[0] == 5
+    assert tuning[1:] == src
+
+
+def test_lead_and_rhythm_extended_together_are_named_once(core):
+    manifest = manifest_for([0] * 6)
+    manifest["arrangements"].insert(1, {"id": "rhythm", "name": "Rhythm", "file": "arrangements/rhythm.json",
+                                        "tuning": [0] * 6})
+    files = {"arrangements/lead.json": lead([0] * 6), "arrangements/rhythm.json": lead([0] * 6, name="Rhythm")}
+
+    report = core.retune_pack(manifest, files, 0, 0, {"lead": 7, "rhythm": 7})
+
+    assert report["label"] == "E Standard (7-string)"
+
+
+def test_string_count_requests_are_validated(core):
+    files = {"arrangements/lead.json": lead([0] * 6), "arrangements/bass.json": bass([0, 0, 0, 0])}
+    with pytest.raises(core.RetuneError, match="from 4 to 7"):
+        core.retune_pack(manifest_for([0] * 6, [0, 0, 0, 0]), copy.deepcopy(files), 0, 0, {"bass": 7})
+    with pytest.raises(core.RetuneError, match="Unknown"):
+        core.retune_pack(manifest_for([0] * 6, [0, 0, 0, 0]), copy.deepcopy(files), 0, 0, {"keys": 5})
+    with pytest.raises(core.RetuneError, match="same as the source"):
+        core.retune_pack(manifest_for([0] * 6, [0, 0, 0, 0]), copy.deepcopy(files), 0, 0, {"bass": 4})
+
+
+def test_requested_drop_with_an_extra_string_drops_the_new_lowest_string(core):
+    notes = [{"t": 1.0, "s": 0, "f": 3}]
+    files = {"arrangements/lead.json": lead([0] * 6, notes=notes)}
+
+    report = core.retune_pack(manifest_for([0] * 6), files, 0, -2, {"lead": 7})
+
+    assert files["arrangements/lead.json"]["tuning"] == [-2, 0, 0, 0, 0, 0, 0]
+    assert (files["arrangements/lead.json"]["notes"][0]["s"], files["arrangements/lead.json"]["notes"][0]["f"]) == (1, 3)
+    assert report["label"] == "Drop A (7-string)"
+
+
+def test_requested_drop_with_a_removed_string_drops_the_new_lowest_string(core):
+    entry = {"id": "lead", "name": "Lead", "file": "arrangements/lead.json", "tuning": [0] * 7}
+    manifest = manifest_for([0] * 6)
+    manifest["arrangements"][0] = entry
+    files = {"arrangements/lead.json": lead([0] * 7, notes=[{"t": 1.0, "s": 1, "f": 5}])}
+
+    report = core.retune_pack(manifest, files, 0, -2, {"lead": 6})
+
+    assert entry["tuning"] == [-2, 0, 0, 0, 0, 0]
+    assert (files["arrangements/lead.json"]["notes"][0]["s"], files["arrangements/lead.json"]["notes"][0]["f"]) == (0, 7)
+    assert report["label"] == "Drop D"
+
+
+def test_empty_tuning_is_not_refretted_by_the_audio_shift(core):
+    manifest = manifest_for([0] * 6)
+    manifest["arrangements"][0]["tuning"] = []
+    files = {"arrangements/lead.json": lead([], notes=[{"t": 1.0, "s": 2, "f": 5}])}
+
+    report = core.retune_pack(manifest, files, 2, 0)
+
+    assert files["arrangements/lead.json"]["notes"][0]["f"] == 5
+    assert report["chart"]["refretted"] == 0
+
+
+def test_a_removed_note_does_not_block_its_old_string_number(core):
+    plan = core.StringPlan([None, None, 1], [100, 28, 33], [28, 33])
+    unplayable, relocatable = {"s": 0, "f": 0}, {"s": 1, "f": 0}
+    report = core.ChartReport()
+
+    kept, _ = core._place_group([unplayable, relocatable], plan, report, [], 1.0)
+
+    assert kept == [relocatable]
+    assert (relocatable["s"], relocatable["f"]) == (0, 0)
+    assert report.removed == 1 and report.relocated == 1 and report.octave_moved == 0
+
+
+def test_time_groups_chain_close_notes_within_a_two_millisecond_window(core):
+    cluster = [{"t": 0.0}, {"t": 0.0008}, {"t": 0.0016}]
+    run = [{"t": 1.0}, {"t": 1.0009}, {"t": 1.0018}, {"t": 1.0027}, {"t": 1.0036}]
+    assert [[n["t"] for n in g] for g in core._time_groups(cluster)] == [[0.0, 0.0008, 0.0016]]
+    assert [[n["t"] for n in g] for g in core._time_groups(run)] == [[1.0, 1.0009, 1.0018], [1.0027, 1.0036]]
+
+
+def test_arrangements_sharing_a_chart_need_the_same_string_count(core):
+    manifest = manifest_for([0] * 6, [-2, 0, 0, 0])
+    manifest["arrangements"].insert(2, {"id": "bass2", "name": "Bass 2", "type": "bass",
+                                        "file": "arrangements/bass.json", "tuning": [-2, 0, 0, 0]})
+    files = {"arrangements/lead.json": lead([0] * 6),
+             "arrangements/bass.json": bass([-2, 0, 0, 0], notes=[{"t": 1.0, "s": 0, "f": 0},
+                                                                   {"t": 2.0, "s": 3, "f": 5}])}
+
+    with pytest.raises(core.RetuneError, match="share a chart file"):
+        core.retune_pack(copy.deepcopy(manifest), copy.deepcopy(files), 0, 0, {"bass": 5})
+    report = core.retune_pack(manifest, files, 0, 0, {"bass": 5, "bass2": 5})
+
+    assert [a["strings_to"] for a in report["arrangements"]] == [6, 5, 5]
+    assert manifest["arrangements"][1]["tuning"] == [0] * 5
+    assert manifest["arrangements"][2]["tuning"] == [0] * 5
+    assert [a["to"] for a in report["arrangements"][1:]] == ["E Standard (5-string)"] * 2
+    assert [(n["s"], n["f"]) for n in files["arrangements/bass.json"]["notes"]] == [(0, 3), (4, 5)]
+
+
+def test_template_only_chord_keeps_its_note_when_a_string_is_added(core):
+    templates = [{"name": "D5", "fingers": [0, 0, 0, -1, -1, -1], "frets": [0, 0, 0, -1, -1, -1]}]
+    chords = [{"t": 1.0, "id": 0}]
+    files = {"arrangements/lead.json": lead([-2, 0, 0, 0, 0, 0], chords=chords, templates=templates)}
+
+    core.retune_pack(manifest_for([-2, 0, 0, 0, 0, 0]), files, 0, 0, {"lead": 7})
+
+    assert files["arrangements/lead.json"]["templates"][0]["frets"] == [3, -1, 0, 0, -1, -1, -1]
+    assert files["arrangements/lead.json"]["chords"][0]["id"] == 0
+
+
+def test_template_only_chord_keeps_its_note_when_a_string_is_removed(core):
+    entry = {"id": "lead", "name": "Lead", "file": "arrangements/lead.json", "tuning": [0] * 7}
+    manifest = manifest_for([0] * 6)
+    manifest["arrangements"][0] = entry
+    templates = [{"name": "B", "frets": [0, -1, -1, -1, -1, -1, -1]}]
+    files = {"arrangements/lead.json": lead([0] * 7, chords=[{"t": 1.0, "id": 0}], templates=templates)}
+
+    core.retune_pack(manifest, files, 0, 0, {"lead": 6})
+
+    assert files["arrangements/lead.json"]["templates"][0]["frets"] == [7, -1, -1, -1, -1, -1]
+
+
+def test_padded_six_slot_bass_tuning_counts_its_real_strings(core):
+    five = bass([0] * 6, notes=[{"t": 1.0, "s": 4, "f": 2}])
+    four = bass([0] * 6, notes=[{"t": 1.0, "s": 1, "f": 2}])
+    assert core.chart_string_count({"type": "bass"}, five) == 5
+    assert core.chart_string_count({"type": "bass"}, four) == 4
+    assert core.string_choices({"type": "bass"}, five) == [4, 5]
+
+
+def test_label_comes_from_the_reference_even_without_ids(core):
+    manifest = {"title": "S", "artist": "A", "duration": 1.0, "stems": [], "arrangements": [
+        {"name": "Bass", "type": "bass", "file": "arrangements/bass.json", "tuning": [-3, -1, -1, -1]},
+        {"name": "Lead", "file": "arrangements/lead.json", "tuning": [-1] * 6},
+    ]}
+    files = {"arrangements/bass.json": bass([-3, -1, -1, -1]), "arrangements/lead.json": lead([-1] * 6)}
+
+    report = core.retune_pack(manifest, files, 1, 0)
+
+    assert report["label"] == "E Standard"
+
+
+def test_drop_target_keeps_its_drop_on_the_new_lowest_string(core):
+    files = {"arrangements/lead.json": lead([-2, 0, 0, 0, 0, 0])}
+
+    report = core.retune_pack(manifest_for([-2, 0, 0, 0, 0, 0]), files, -2, 0, {"lead": 7})
+
+    assert files["arrangements/lead.json"]["tuning"] == [-4, -2, -2, -2, -2, -2, -2]
+    assert report["label"] == "Drop G (7-string)"
+
+
+def test_current_tuning_target_still_undrops_when_adding_a_string(core):
+    files = {"arrangements/lead.json": lead([-2, 0, 0, 0, 0, 0])}
+
+    report = core.retune_pack(manifest_for([-2, 0, 0, 0, 0, 0]), files, 0, 0, {"lead": 7})
+
+    assert files["arrangements/lead.json"]["tuning"] == [0] * 7
+    assert report["label"] == "E Standard (7-string)"
+
+
+def test_chord_placement_replaces_the_shapes_own_relocation(core):
+    entry = {"id": "lead", "name": "Lead", "file": "arrangements/lead.json", "tuning": [0] * 8}
+    manifest = manifest_for([0] * 6)
+    manifest["arrangements"][0] = entry
+    templates = [{"name": "low", "frets": [0, 0, -1, -1, -1, -1, -1, -1]}]
+    chords = [{"t": 1.0, "id": 0, "notes": [{"s": 1, "f": 0}]}]
+    files = {"arrangements/lead.json": lead([0] * 8, chords=chords, templates=templates)}
+
+    core.retune_pack(manifest, files, 0, 0, {"lead": 6})
+
+    chart = files["arrangements/lead.json"]
+    assert chart["templates"][0]["frets"] == [2, 2, -1, -1, -1, -1]
+    assert [(n["s"], n["f"]) for n in chart["chords"][0]["notes"]] == [(0, 7)]
+    assert chart["templates"][chart["chords"][0]["id"]]["frets"] == [7, -1, -1, -1, -1, -1]
+
+
+def test_preview_mode_leaves_side_files_alone(core):
+    notation = {"version": 1, "measures": [{"idx": 1, "t": 0.0, "ks": 0, "staves": {"rh": {"voices": [
+        {"v": 1, "beats": [{"t": 0.0, "dur": 4, "notes": [{"midi": 60}]}]}]}}}]}
+    manifest = manifest_for([-1] * 6, vocal_pitch="vocal_pitch.json")
+    manifest["arrangements"].append({"id": "keys", "type": "piano", "notation": "notation.json"})
+    files = {"arrangements/lead.json": lead([-1] * 6), "notation.json": notation,
+             "vocal_pitch.json": {"version": 1, "notes": [{"t": 1.0, "d": 0.5, "midi": 63}]}}
+    before = copy.deepcopy(files)
+
+    report = core.retune_pack(manifest, files, 1, 0, side_files=False)
+
+    assert report["to"] == "E Standard"
+    assert files["notation.json"] == before["notation.json"]
+    assert files["vocal_pitch.json"] == before["vocal_pitch.json"]
+
+
+def test_nearest_target_uses_the_alignment_offset(core):
+    shrink = core.StringPlan([None, None, 0, 1], [30, 35, 40, 45], [40, 45], offset=-2)
+    grow = core.StringPlan([1, 2], [28, 33], [23, 28, 33], offset=1)
+    assert [shrink.nearest_target(s) for s in range(4)] == [0, 0, 0, 1]
+    assert grow.nearest_target(0) == 1
+
+
+def test_string_choices_per_instrument(core):
+    assert core.string_choices({"type": "bass"}, bass([0, 0, 0, 0])) == [4, 5]
+    assert core.string_choices({"type": "bass"}, bass([0] * 6, notes=[{"t": 1.0, "s": 5, "f": 0}])) == [6]
+    assert core.string_choices({"name": "Lead"}, lead([0] * 6)) == [6, 7, 8]
+    assert core.string_choices({"name": "Lead"}, lead([0] * 4)) == [4]
