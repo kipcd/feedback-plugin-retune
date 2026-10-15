@@ -4,6 +4,16 @@ All notable changes to the Retune plugin are documented here.
 
 ## [Unreleased]
 
+## [0.2.1]
+
+### Changed
+
+- The dialog starts on **current tuning (change strings only)**, so nothing changes until a tuning or
+  string count is picked. It used to pre-select E Standard, which also converted every guitar when
+  only a bass string count was meant to change.
+- The preview and the result screen list every arrangement that changes, with its own counts
+  (notes re-fretted, moved to another string, moved up an octave), instead of one combined total.
+
 ## [0.2.0]
 
 ### Added

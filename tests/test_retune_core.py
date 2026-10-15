@@ -613,6 +613,8 @@ def test_arrangements_sharing_a_chart_need_the_same_string_count(core):
     assert manifest["arrangements"][2]["tuning"] == [0] * 5
     assert [a["to"] for a in report["arrangements"][1:]] == ["E Standard (5-string)"] * 2
     assert [(n["s"], n["f"]) for n in files["arrangements/bass.json"]["notes"]] == [(0, 3), (4, 5)]
+    assert [(a["refretted"], a["relocated"]) for a in report["arrangements"][1:]] == [(1, 1), (1, 1)]
+    assert (report["chart"]["refretted"], report["chart"]["relocated"]) == (1, 1)
 
 
 def test_template_only_chord_keeps_its_note_when_a_string_is_added(core):

@@ -728,10 +728,14 @@ def retune_pack(manifest: dict, files: dict[str, dict], shift: int, low_adjust: 
                 and instrument_kind(entry, chart) == "keys" and first_time(entry["file"]):
             transpose_keys_chart(chart, shift)
 
+    reports_by_file: dict[str, ChartReport] = {}
     for entry, arrangement, (plan, src, tgt, std, target_std) in plans:
-        capo = entry.get("capo", arrangement.get("capo", 0))
-        report = refret_arrangement(arrangement, plan, capo) if first_time(entry["file"]) else ChartReport()
-        total.add(report)
+        if first_time(entry["file"]):
+            capo = entry.get("capo", arrangement.get("capo", 0))
+            report = reports_by_file[entry["file"]] = refret_arrangement(arrangement, plan, capo)
+            total.add(report)
+        else:
+            report = reports_by_file.get(entry["file"], ChartReport())
         entry["tuning"] = tgt
         if "tuning" in arrangement:
             arrangement["tuning"] = list(tgt)

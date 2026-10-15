@@ -31,7 +31,16 @@
 .plugin-retune-dim {
     margin: 0 0 0.75rem;
     font-size: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
+.plugin-retune-sub,
+.plugin-retune-dim,
+.plugin-retune-dim-inline {
     color: rgb(var(--fb-text-dim, 156 163 175));
+}
+
+.plugin-retune-change {
     overflow-wrap: anywhere;
 }
 

@@ -103,7 +103,12 @@
         renderPicker(body, song, options);
     }
 
+    function hasStringChoices(options) {
+        return (options.arrangements || []).some((a) => a.choices && a.choices.length > 1);
+    }
+
     function defaultTarget(options) {
+        if (hasStringChoices(options)) return String(Math.max(0, options.targets.findIndex((t) => t.keep)));
         const usable = options.targets
             .map((t, i) => ({ t, i }))
             .filter(({ t }) => !t.keep && (!t.shift || options.ffmpeg));
@@ -114,6 +119,20 @@
         return usable.length ? String(usable[0].i) : '';
     }
 
+    function changeLines(report, prefix) {
+        const lines = [];
+        if (!report.chart || !report.chart.refretted) lines.push(el('p', '', `${prefix}${chartSummary(report.chart)}`));
+        for (const a of report.arrangements || []) {
+            if (a.from === a.to && !a.refretted) continue;
+            const line = el('p', 'plugin-retune-change');
+            line.append(el('strong', '', `${a.name}: `), `${a.from} → ${a.to}`);
+            const effect = a.refretted ? chartSummary(a) : 'frets stay the same';
+            line.append(el('span', 'plugin-retune-dim-inline', ` — ${effect}`));
+            lines.push(line);
+        }
+        return lines;
+    }
+
     function renderPicker(body, song, options) {
         const currentTuning = el('p', 'plugin-retune-current');
         currentTuning.append('Current tuning: ', el('strong', '', options.source.name));
@@ -121,7 +140,9 @@
         const select = el('select', 'plugin-retune-select');
         select.setAttribute('aria-label', 'Target tuning');
         const groups = new Map();
+        const offerKeep = hasStringChoices(options);
         options.targets.forEach((t, i) => {
+            if (t.keep && !offerKeep) return;
             const name = groupFor(t);
             if (!groups.has(name)) {
                 const g = el('optgroup');
@@ -210,13 +231,8 @@
             convertButton.disabled = false;
             detail.replaceChildren(
                 el('p', '', t.shift ? `Audio: pitch-shifted ${semitones(t.shift)}.` : 'Audio: unchanged.'),
-                el('p', '', `Chart: ${chartSummary(preview.chart)}`),
             );
-            for (const a of preview.arrangements || []) {
-                if (a.strings_from !== a.strings_to) {
-                    detail.appendChild(el('p', 'plugin-retune-dim', `${a.name}: ${a.from} → ${a.to}`));
-                }
-            }
+            detail.append(...changeLines(preview, 'Chart: '));
             const undropped = (preview.arrangements || []).some((a) => a.strings_to > a.strings_from
                 && /^Drop /.test(a.from) && !/^Drop /.test(a.to));
             if (undropped) {
@@ -285,11 +301,10 @@
     function showDone(body, msg) {
         try { window.feedBack?.emit('library:changed', { reason: 'retune', filename: msg.filename }); } catch (_) { /* */ }
         const report = msg.report || {};
-        const lines = [el('p', 'plugin-retune-done', `${report.from} → ${report.label || report.to}`), el('p', 'plugin-retune-dim', msg.filename)];
-        for (const a of report.arrangements || []) {
-            if (a.from !== a.to) lines.push(el('p', 'plugin-retune-dim', `${a.name}: ${a.from} → ${a.to}`));
-        }
-        lines.push(el('p', '', chartSummary(report.chart)));
+        const label = report.label || report.to || 'Converted';
+        const heading = !report.from || report.from === report.to ? label : `${report.from} → ${label}`;
+        const lines = [el('p', 'plugin-retune-done', heading), el('p', 'plugin-retune-dim', msg.filename)];
+        lines.push(...changeLines(report, ''));
         if (msg.audio_method === 'resample') lines.push(el('p', 'plugin-retune-warn', 'Audio was shifted with the lower-quality resample method.'));
         body.replaceChildren(...lines, buttons(['Close', 'plugin-retune-btn-primary', closeModal]));
     }
