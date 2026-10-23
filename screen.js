@@ -34,7 +34,7 @@
     }
 
     function targetLabel(t) {
-        return t.keep ? `${t.name} — current tuning (change strings only)` : `${t.name} — ${audioChange(t.shift)}`;
+        return t.keep ? `${t.name} — no audio change (change strings only)` : `${t.name} — ${audioChange(t.shift)}`;
     }
 
     function groupFor(t) {
@@ -233,9 +233,11 @@
                 el('p', '', t.shift ? `Audio: pitch-shifted ${semitones(t.shift)}.` : 'Audio: unchanged.'),
             );
             detail.append(...changeLines(preview, 'Chart: '));
-            const undropped = (preview.arrangements || []).some((a) => a.strings_to > a.strings_from
-                && /^Drop /.test(a.from) && !/^Drop /.test(a.to));
-            if (undropped) {
+            const restandardised = (preview.arrangements || []).some((a) => a.strings_to > a.strings_from && a.from !== a.to);
+            if (t.keep && restandardised) {
+                detail.appendChild(el('p', 'plugin-retune-dim', 'Added strings use standard tuning: every note keeps its pitch and moves to the frets that play it there.'));
+            } else if (restandardised && (preview.arrangements || []).some((a) => a.strings_to > a.strings_from
+                    && /^Drop /.test(a.from) && !/^Drop /.test(a.to))) {
                 detail.appendChild(el('p', 'plugin-retune-dim', 'Adding a string returns a dropped low string to standard — the new string covers its notes.'));
             }
             if (t.large_shift) detail.appendChild(el('p', 'plugin-retune-warn', 'Shifts beyond 3 semitones start to sound processed.'));

@@ -4,6 +4,16 @@ All notable changes to the Retune plugin are documented here.
 
 ## [Unreleased]
 
+## [0.2.2]
+
+### Changed
+
+- **Change strings only** now lays added strings out in the instrument's standard tuning without
+  touching the audio, whenever the song's lowest note still fits: a 4-string Eb Standard bass becomes
+  a standard B E A D G 5-string, with every note re-fretted to keep its pitch. It used to keep the song's
+  tuning, giving Bb Eb Ab Db Gb. Songs that go below the new lowest string keep the old behaviour.
+- The target is labelled **no audio change (change strings only)**.
+
 ## [0.2.1]
 
 ### Changed

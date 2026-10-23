@@ -655,8 +655,11 @@ def plan_arrangement(entry: dict, arrangement: dict, ref_src: list[int], ref_std
     target_std = STANDARD_OPEN[(fretted_kind(entry, arrangement), target_count)]
     offset = string_alignment(std, target_std)
     keeps_tuning = shift == 0 and low_adjust == 0
-    drop_target = tuning_family(padded(tgt)) == "drop" and not keeps_tuning
-    tgt = extended_tuning(padded(src), shift, offset, target_count, drop_lowest=drop_target)
+    if keeps_tuning and target_count > count and min(src_opens) >= target_std[0]:
+        tgt = [0] * target_count
+    else:
+        drop_target = tuning_family(padded(tgt)) == "drop" and not keeps_tuning
+        tgt = extended_tuning(padded(src), shift, offset, target_count, drop_lowest=drop_target)
     target_of = [s + offset if 0 <= s + offset < target_count else None for s in range(count)]
     opens = [target_std[t] + tgt[t] for t in range(target_count)]
     return StringPlan(target_of, src_opens, opens, offset), src, tgt, std, target_std

@@ -717,6 +717,63 @@ def test_nearest_target_uses_the_alignment_offset(core):
     assert grow.nearest_target(0) == 1
 
 
+def test_eb_standard_bass_fits_a_standard_five_string_without_a_pitch_shift(core):
+    notes = [{"t": 1.0, "s": 0, "f": 0}, {"t": 2.0, "s": 0, "f": 3}, {"t": 3.0, "s": 1, "f": 0},
+             {"t": 4.0, "s": 3, "f": 5}]
+    files = {"arrangements/lead.json": lead([-1] * 6),
+             "arrangements/bass.json": bass([-1] * 4, notes=notes)}
+    manifest = manifest_for([-1] * 6, [-1] * 4)
+
+    report = core.retune_pack(manifest, files, 0, 0, {"bass": 5})
+
+    assert manifest["arrangements"][1]["tuning"] == [0] * 5
+    assert [(n["s"], n["f"]) for n in files["arrangements/bass.json"]["notes"]] == [(0, 4), (1, 2), (1, 4), (4, 4)]
+    assert manifest["arrangements"][0]["tuning"] == [-1] * 6
+    assert report["arrangements"][1]["to"] == "E Standard (5-string)"
+    assert report["chart"]["octave_moved"] == 0
+
+
+@pytest.mark.parametrize("src", [[-3, -1, -1, -1], [-2] * 4, [-5] * 4])
+def test_lower_bass_tunings_also_fit_a_standard_five_string(core, src):
+    files = {"arrangements/lead.json": lead([0] * 6),
+             "arrangements/bass.json": bass(src, notes=[{"t": 1.0, "s": 0, "f": 0}])}
+    manifest = manifest_for([0] * 6, src)
+
+    report = core.retune_pack(manifest, files, 0, 0, {"bass": 5})
+
+    assert manifest["arrangements"][1]["tuning"] == [0] * 5
+    note = files["arrangements/bass.json"]["notes"][0]
+    assert 23 + note["f"] == 28 + src[0]
+    assert report["chart"]["octave_moved"] == 0
+
+
+def test_a_bass_lower_than_the_new_low_string_keeps_its_tuning(core):
+    files = {"arrangements/lead.json": lead([0] * 6), "arrangements/bass.json": bass([-7] * 4)}
+    manifest = manifest_for([0] * 6, [-7] * 4)
+
+    core.retune_pack(manifest, files, 0, 0, {"bass": 5})
+
+    assert manifest["arrangements"][1]["tuning"] == [-7] * 5
+
+
+def test_eb_standard_guitar_fits_a_standard_seven_string(core):
+    files = {"arrangements/lead.json": lead([-1] * 6, notes=[{"t": 1.0, "s": 0, "f": 0}])}
+
+    core.retune_pack(manifest_for([-1] * 6), files, 0, 0, {"lead": 7})
+
+    assert files["arrangements/lead.json"]["tuning"] == [0] * 7
+    assert [(n["s"], n["f"]) for n in files["arrangements/lead.json"]["notes"]] == [(0, 4)]
+
+
+def test_explicit_tuning_target_still_decides_the_extended_tuning(core):
+    files = {"arrangements/lead.json": lead([0] * 6), "arrangements/bass.json": bass([0] * 4)}
+    manifest = manifest_for([0] * 6, [0] * 4)
+
+    core.retune_pack(manifest, files, -1, 0, {"bass": 5})
+
+    assert manifest["arrangements"][1]["tuning"] == [-1] * 5
+
+
 def test_string_choices_per_instrument(core):
     assert core.string_choices({"type": "bass"}, bass([0, 0, 0, 0])) == [4, 5]
     assert core.string_choices({"type": "bass"}, bass([0] * 6, notes=[{"t": 1.0, "s": 5, "f": 0}])) == [6]

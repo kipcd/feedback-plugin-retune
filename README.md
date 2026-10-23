@@ -62,19 +62,25 @@ timing are unchanged.
 
 Each guitar and bass arrangement can also be converted to a different string count: bass to 4 or 5
 strings, guitar to 6, 7 or 8. This combines with the tuning target, or works on its own with the
-**current tuning (change strings only)** target — for example a 4-string Drop D bass becomes a 5-string
-bass in E Standard while the guitar stays in Drop D. Arrangements that share a chart file get one
+**no audio change (change strings only)** target. Arrangements that share a chart file get one
 string-count picker.
+
+With **change strings only**, added strings use the instrument's standard tuning (B E A D G for a
+5-string bass, B E A D G B E for a 7-string guitar) and the audio is left alone: every note keeps its
+pitch and moves to the frets that play it there. A 4-string bass in Drop D, Eb Standard, D Standard or
+C Standard all fit a standard 5-string this way, as does a 6-string in Eb Standard on a standard
+7-string; the guitar keeps its own tuning when only the bass changes. If the song goes lower than
+the new instrument's lowest string (e.g. a 4-string in A Standard), the arrangement keeps the song's
+tuning instead and gains a string a fourth below.
 
 6-string bass isn't offered: feedBack can't tell a 6-string bass tuning from the 6-slot tuning older
 charts pad every bass to, so a converted chart would display with the wrong number of strings.
 
 - Strings are matched by their standard open notes, so a 4-string bass sits on the E A D G strings of
   a 5-string, and a 6-string guitar on the top six strings of a 7-string. Notes keep their pitch.
-- With the current tuning or a Standard target, added low strings use standard tuning and a dropped
-  low string goes back to standard: the new low string covers the notes the drop was for. Notes below
-  the old low string move onto it (an open D becomes fret 3 on the B string) instead of jumping up an
-  octave.
+- With a Standard target, added low strings use that standard tuning and a dropped low string goes
+  back to standard: the new low string covers the notes the drop was for. Notes below the old low
+  string move onto it (an open D becomes fret 3 on the B string) instead of jumping up an octave.
 - With a Drop target (e.g. E Standard → Drop D, or Drop D → Drop C), the drop goes on the new lowest
   string, so a 6-string converted to a 7-string becomes Drop A or Drop G. The same applies when
   removing strings: a 7-string in Drop A becomes a 6-string in Drop D.
