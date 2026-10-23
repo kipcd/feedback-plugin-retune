@@ -774,6 +774,20 @@ def test_explicit_tuning_target_still_decides_the_extended_tuning(core):
     assert manifest["arrangements"][1]["tuning"] == [-1] * 5
 
 
+def test_unused_guitar_shapes_in_a_bass_chart_do_not_count_as_strings(core):
+    templates = [{"name": "Eb5", "frets": [12, -1, -1, -1, 12, 12]},
+                 {"name": "power", "frets": [3, 5, -1, -1, -1, -1]}]
+    chart = bass([-1] * 6, notes=[{"t": 1.0, "s": 3, "f": 2}],
+                 chords=[{"t": 2.0, "id": 1, "notes": [{"s": 0, "f": 3}, {"s": 1, "f": 5}]}], templates=templates)
+    entry = {"id": "bass", "name": "Bass", "type": "bass"}
+
+    assert core.chart_string_count(entry, chart) == 4
+    assert core.string_choices(entry, chart) == [4, 5]
+
+    chart["handshapes"] = [{"chord_id": 0, "start_time": 1.0, "end_time": 2.0}]
+    assert core.chart_string_count(entry, chart) == 6
+
+
 def test_string_choices_per_instrument(core):
     assert core.string_choices({"type": "bass"}, bass([0, 0, 0, 0])) == [4, 5]
     assert core.string_choices({"type": "bass"}, bass([0] * 6, notes=[{"t": 1.0, "s": 5, "f": 0}])) == [6]

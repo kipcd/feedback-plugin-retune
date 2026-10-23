@@ -101,13 +101,28 @@ def _iter_chart_notes(arrangement: dict):
                     yield n
 
 
+def _used_template_ids(arrangement: dict) -> set[int]:
+    layers = [arrangement] + [level for phrase in arrangement.get("phrases") or []
+                              for level in phrase.get("levels") or []]
+    used = set()
+    for layer in layers:
+        for chord in layer.get("chords") or []:
+            if isinstance(chord.get("id"), int):
+                used.add(chord["id"])
+        for shape in layer.get("handshapes") or []:
+            if isinstance(shape.get("chord_id"), int):
+                used.add(shape["chord_id"])
+    return used
+
+
 def string_count(entry: dict, arrangement: dict, tuning: list[int]) -> int:
     highest = max((int(n.get("s", 0)) for n in _iter_chart_notes(arrangement)), default=-1)
-    for t in arrangement.get("templates") or []:
-        frets = t.get("frets") or []
-        for s, f in enumerate(frets):
-            if f is not None and f >= 0:
-                highest = max(highest, s)
+    templates = arrangement.get("templates") or []
+    for i in _used_template_ids(arrangement):
+        if 0 <= i < len(templates):
+            for s, f in enumerate(templates[i].get("frets") or []):
+                if f is not None and f >= 0:
+                    highest = max(highest, s)
     count = len(tuning) if tuning else 6
     if is_bass(entry, arrangement) and count == 6:
         count = 4

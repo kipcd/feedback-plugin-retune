@@ -4,6 +4,14 @@ All notable changes to the Retune plugin are documented here.
 
 ## [Unreleased]
 
+## [0.2.3]
+
+### Fixed
+
+- A chart's string count ignores chord shapes that nothing in the arrangement uses. Packs converted
+  from other formats often give the bass the guitar's whole shape table, which made a 4-string bass
+  look like a 6-string and hid its string-count picker.
+
 ## [0.2.2]
 
 ### Changed
